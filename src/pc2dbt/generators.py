@@ -27,7 +27,7 @@ def generate_projection(transformation: Transformation, port_sources: PortSource
     expressions for OUTPUT ports."""
     upstream_alias = _single_upstream_alias(port_sources)
     select_cols = [
-        _select_expression(port, transformation, port_sources)
+        _select_expression(port, port_sources)
         for port in transformation.ports
         if port.porttype != "INPUT"
     ]
@@ -97,7 +97,7 @@ def generate_joiner(transformation: Transformation, port_sources: PortSources) -
     )
 
 
-def _select_expression(port, transformation: Transformation, port_sources: PortSources) -> str:
+def _select_expression(port, port_sources: PortSources) -> str:
     if port.porttype == "OUTPUT" and port.expression:
         expr_sql = _substitute_local_refs(port.expression, port_sources)
         return f"{expr_sql} as {port.name}"

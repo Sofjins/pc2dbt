@@ -36,16 +36,16 @@ def parse_mapping(xml_path: str) -> Mapping:
 
 
 def _parse_source(el: ET.Element) -> Source:
-    fields = [_parse_field(f, "SOURCEFIELD") for f in el.findall("SOURCEFIELD")]
+    fields = [_parse_field(f) for f in el.findall("SOURCEFIELD")]
     return Source(name=el.get("NAME"), fields=fields)
 
 
 def _parse_target(el: ET.Element) -> Target:
-    fields = [_parse_field(f, "TARGETFIELD") for f in el.findall("TARGETFIELD")]
+    fields = [_parse_field(f) for f in el.findall("TARGETFIELD")]
     return Target(name=el.get("NAME"), fields=fields)
 
 
-def _parse_field(el: ET.Element, tag: str) -> Field:
+def _parse_field(el: ET.Element) -> Field:
     return Field(name=el.get("NAME"), datatype=el.get("DATATYPE"))
 
 
