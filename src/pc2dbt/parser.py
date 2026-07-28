@@ -26,6 +26,7 @@ def parse_mapping(xml_path: str) -> Mapping:
 
     return Mapping(
         name=mapping_el.get("NAME"),
+        source_group=folder.get("NAME").lower(),
         sources=sources,
         target=target,
         transformations=transformations,

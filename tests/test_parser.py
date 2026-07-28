@@ -9,6 +9,11 @@ def test_parses_mapping_name_and_target():
     assert mapping.target.name == "customers"
 
 
+def test_parses_source_group_from_folder_name():
+    mapping = parse_mapping(FIXTURE)
+    assert mapping.source_group == "jaffle_shop"
+
+
 def test_parses_sources():
     mapping = parse_mapping(FIXTURE)
     assert set(mapping.sources) == {"raw_customers", "raw_orders", "raw_payments"}

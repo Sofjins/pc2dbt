@@ -92,9 +92,14 @@ class Connector:
 @dataclass
 class Mapping:
     """A full PowerCenter mapping: sources, one target, transformations,
-    and the instance graph connecting them."""
+    and the instance graph connecting them.
+
+    source_group is the dbt source() group name used for the leaf CTEs that
+    read from raw source tables - taken from the XML's FOLDER name.
+    """
 
     name: str
+    source_group: str
     sources: dict[str, Source]
     target: Target
     transformations: dict[str, Transformation]
