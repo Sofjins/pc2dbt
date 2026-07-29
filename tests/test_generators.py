@@ -1,6 +1,7 @@
 import pytest
 
 from pc2dbt.generators import (
+    UpstreamColumn,
     generate_aggregator,
     generate_joiner,
     generate_projection,
@@ -30,8 +31,8 @@ def test_generate_projection_passthrough_source_qualifier():
         ],
     )
     port_sources = {
-        "ID": ("raw_customers", "ID"),
-        "FIRST_NAME": ("raw_customers", "FIRST_NAME"),
+        "ID": UpstreamColumn("raw_customers", "ID"),
+        "FIRST_NAME": UpstreamColumn("raw_customers", "FIRST_NAME"),
     }
     sql = generate_projection(sq, port_sources)
     assert "select" in sql
@@ -65,9 +66,9 @@ def test_generate_projection_expression_with_rename_and_computation():
         ],
     )
     port_sources = {
-        "ID": ("sq_raw_payments", "ID"),
-        "ORDER_ID": ("sq_raw_payments", "ORDER_ID"),
-        "AMOUNT_CENTS": ("sq_raw_payments", "AMOUNT"),
+        "ID": UpstreamColumn("sq_raw_payments", "ID"),
+        "ORDER_ID": UpstreamColumn("sq_raw_payments", "ORDER_ID"),
+        "AMOUNT_CENTS": UpstreamColumn("sq_raw_payments", "AMOUNT"),
     }
     sql = generate_projection(exp, port_sources)
     assert "ID as PAYMENT_ID" in sql
@@ -105,9 +106,9 @@ def test_generate_aggregator():
         ],
     )
     port_sources = {
-        "CUSTOMER_ID": ("exp_stg_orders", "CUSTOMER_ID"),
-        "ORDER_DATE": ("exp_stg_orders", "ORDER_DATE"),
-        "ORDER_ID": ("exp_stg_orders", "ORDER_ID"),
+        "CUSTOMER_ID": UpstreamColumn("exp_stg_orders", "CUSTOMER_ID"),
+        "ORDER_DATE": UpstreamColumn("exp_stg_orders", "ORDER_DATE"),
+        "ORDER_ID": UpstreamColumn("exp_stg_orders", "ORDER_ID"),
     }
     sql = generate_aggregator(agg, port_sources)
     assert "MIN(ORDER_DATE) as FIRST_ORDER" in sql
@@ -133,10 +134,10 @@ def test_generate_joiner_normal_join_is_inner():
         },
     )
     port_sources = {
-        "ORDER_ID": ("exp_stg_orders", "ORDER_ID"),
-        "CUSTOMER_ID": ("exp_stg_orders", "CUSTOMER_ID"),
-        "ORDER_ID1": ("exp_stg_payments", "ORDER_ID"),
-        "AMOUNT": ("exp_stg_payments", "AMOUNT"),
+        "ORDER_ID": UpstreamColumn("exp_stg_orders", "ORDER_ID"),
+        "CUSTOMER_ID": UpstreamColumn("exp_stg_orders", "CUSTOMER_ID"),
+        "ORDER_ID1": UpstreamColumn("exp_stg_payments", "ORDER_ID"),
+        "AMOUNT": UpstreamColumn("exp_stg_payments", "AMOUNT"),
     }
     sql = generate_joiner(joiner, port_sources)
     assert "inner join" in sql
@@ -163,10 +164,10 @@ def test_generate_joiner_master_outer_join_keeps_detail_side():
         },
     )
     port_sources = {
-        "CUSTOMER_ID": ("agg_customer_orders", "CUSTOMER_ID"),
-        "FIRST_ORDER": ("agg_customer_orders", "FIRST_ORDER"),
-        "CUSTOMER_ID1": ("exp_stg_customers", "CUSTOMER_ID"),
-        "FIRST_NAME": ("exp_stg_customers", "FIRST_NAME"),
+        "CUSTOMER_ID": UpstreamColumn("agg_customer_orders", "CUSTOMER_ID"),
+        "FIRST_ORDER": UpstreamColumn("agg_customer_orders", "FIRST_ORDER"),
+        "CUSTOMER_ID1": UpstreamColumn("exp_stg_customers", "CUSTOMER_ID"),
+        "FIRST_NAME": UpstreamColumn("exp_stg_customers", "FIRST_NAME"),
     }
     sql = generate_joiner(joiner, port_sources)
     assert "left join" in sql
@@ -184,8 +185,8 @@ def test_generate_projection_rejects_more_than_one_upstream_source():
         ports=[Port(name="A", datatype="integer", porttype="INPUT/OUTPUT")],
     )
     port_sources = {
-        "A": ("one_upstream", "A"),
-        "B": ("another_upstream", "B"),
+        "A": UpstreamColumn("one_upstream", "A"),
+        "B": UpstreamColumn("another_upstream", "B"),
     }
     with pytest.raises(ValueError, match="single upstream"):
         generate_projection(exp, port_sources)
@@ -203,9 +204,9 @@ def test_generate_joiner_rejects_more_than_two_upstream_sources():
         },
     )
     port_sources = {
-        "A": ("first", "A"),
-        "B": ("second", "B"),
-        "C": ("third", "C"),
+        "A": UpstreamColumn("first", "A"),
+        "B": UpstreamColumn("second", "B"),
+        "C": UpstreamColumn("third", "C"),
     }
     with pytest.raises(ValueError, match="exactly two upstream sources"):
         generate_joiner(joiner, port_sources)

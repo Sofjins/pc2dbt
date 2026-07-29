@@ -4,6 +4,7 @@ import textwrap
 
 from pc2dbt.generators import (
     PortSources,
+    UpstreamColumn,
     column_reference,
     generate_aggregator,
     generate_joiner,
@@ -56,7 +57,7 @@ def _generate_transformation_cte(mapping: Mapping, instance: Instance, incoming_
 
 def _port_sources_for(instance_name: str, incoming_by_target: dict) -> PortSources:
     connectors = incoming_by_target.get(instance_name, [])
-    return {c.to_field: (c.from_instance, c.from_field) for c in connectors}
+    return {c.to_field: UpstreamColumn(alias=c.from_instance, column=c.from_field) for c in connectors}
 
 
 def _build_final_select(mapping: Mapping, target_instance: Instance, incoming_by_target: dict) -> str:
@@ -65,8 +66,8 @@ def _build_final_select(mapping: Mapping, target_instance: Instance, incoming_by
 
     select_cols = []
     for target_field in mapping.target.fields:
-        _, column = port_sources[target_field.name]
-        select_cols.append(column_reference(column, target_field.name))
+        upstream = port_sources[target_field.name]
+        select_cols.append(column_reference(upstream.column, target_field.name))
 
     select_clause = ",\n    ".join(select_cols)
     return f"select\n    {select_clause}\nfrom {upstream_alias}"
