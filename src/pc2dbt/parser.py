@@ -10,14 +10,23 @@ def parse_mapping(xml_path: str) -> Mapping:
     root = tree.getroot()
     folder = root.find("REPOSITORY/FOLDER")
 
-    sources = {s.name: s for s in (_parse_source(el) for el in folder.findall("SOURCE"))}
-    targets = {t.name: t for t in (_parse_target(el) for el in folder.findall("TARGET"))}
+    sources = {}
+    for el in folder.findall("SOURCE"):
+        source = _parse_source(el)
+        sources[source.name] = source
+
+    targets = {}
+    for el in folder.findall("TARGET"):
+        target = _parse_target(el)
+        targets[target.name] = target
 
     mapping_el = folder.find("MAPPING")
-    transformations = {
-        t.name: t
-        for t in (_parse_transformation(el) for el in mapping_el.findall("TRANSFORMATION"))
-    }
+
+    transformations = {}
+    for el in mapping_el.findall("TRANSFORMATION"):
+        transformation = _parse_transformation(el)
+        transformations[transformation.name] = transformation
+
     instances = [_parse_instance(el) for el in mapping_el.findall("INSTANCE")]
     connectors = [_parse_connector(el) for el in mapping_el.findall("CONNECTOR")]
 

@@ -25,7 +25,7 @@ def generate_projection(transformation: Transformation, port_sources: PortSource
     """CTE body for a Source Qualifier or Expression transformation: a single
     upstream CTE, passthrough columns for INPUT/OUTPUT ports, computed
     expressions for OUTPUT ports."""
-    upstream_alias = _single_upstream_alias(port_sources)
+    upstream_alias = single_upstream_alias(port_sources)
     select_cols = [
         _select_expression(port, port_sources)
         for port in transformation.ports
@@ -38,13 +38,13 @@ def generate_projection(transformation: Transformation, port_sources: PortSource
 def generate_aggregator(transformation: Transformation, port_sources: PortSources) -> str:
     """CTE body for an Aggregator: GROUP BY ports plus aggregate expressions,
     over a single upstream CTE."""
-    upstream_alias = _single_upstream_alias(port_sources)
+    upstream_alias = single_upstream_alias(port_sources)
     select_cols = []
     group_by_cols = []
     for port in transformation.ports:
         if port.expression_type == "GROUPBY":
             _, column = port_sources[port.name]
-            select_cols.append(_passthrough_expression(port.name, column))
+            select_cols.append(column_reference(column, port.name))
             group_by_cols.append(column)
         elif port.porttype == "OUTPUT" and port.expression:
             expr_sql = _substitute_local_refs(port.expression, port_sources)
@@ -67,6 +67,11 @@ def generate_joiner(transformation: Transformation, port_sources: PortSources) -
 
     master_alias, _ = port_sources[master_port_names[0]]
     all_aliases = {alias for alias, _ in port_sources.values()}
+    if len(all_aliases) != 2:
+        raise ValueError(
+            f"Joiner {transformation.name!r} expects exactly two upstream sources, "
+            f"found {sorted(all_aliases)}"
+        )
     detail_alias = next(alias for alias in all_aliases if alias != master_alias)
 
     on_clause = _translate_join_condition(condition, port_sources)
@@ -76,10 +81,7 @@ def generate_joiner(transformation: Transformation, port_sources: PortSources) -
         if port.porttype != "INPUT/OUTPUT":
             continue
         alias, column = port_sources[port.name]
-        if column == port.name:
-            select_cols.append(f"{alias}.{column}")
-        else:
-            select_cols.append(f"{alias}.{column} as {port.name}")
+        select_cols.append(column_reference(column, port.name, alias=alias))
     select_clause = ",\n    ".join(select_cols)
 
     if join_type == "Normal Join":
@@ -97,18 +99,34 @@ def generate_joiner(transformation: Transformation, port_sources: PortSources) -
     )
 
 
+def column_reference(column: str, port_name: str, alias: str | None = None) -> str:
+    """A single SELECT list entry: the (optionally alias-qualified) upstream
+    column, aliased to port_name only if that name differs from the column."""
+    qualified_column = f"{alias}.{column}" if alias else column
+    if column == port_name:
+        return qualified_column
+    return f"{qualified_column} as {port_name}"
+
+
+def single_upstream_alias(port_sources: PortSources) -> str:
+    """The one upstream CTE alias feeding every port in port_sources.
+
+    Source Qualifier, Expression, and Aggregator transformations only
+    support a single upstream transformation - raise a clear error if the
+    ports actually come from more than one, instead of silently picking one.
+    """
+    aliases = {alias for alias, _ in port_sources.values()}
+    if len(aliases) != 1:
+        raise ValueError(f"Expected a single upstream source, found {sorted(aliases)}")
+    return next(iter(aliases))
+
+
 def _select_expression(port, port_sources: PortSources) -> str:
     if port.porttype == "OUTPUT" and port.expression:
         expr_sql = _substitute_local_refs(port.expression, port_sources)
         return f"{expr_sql} as {port.name}"
     _, column = port_sources[port.name]
-    return _passthrough_expression(port.name, column)
-
-
-def _passthrough_expression(port_name: str, upstream_column: str) -> str:
-    if upstream_column == port_name:
-        return port_name
-    return f"{upstream_column} as {port_name}"
+    return column_reference(column, port.name)
 
 
 def _translate_join_condition(condition: str, port_sources: PortSources) -> str:
@@ -120,12 +138,10 @@ def _translate_join_condition(condition: str, port_sources: PortSources) -> str:
 
 def _substitute_local_refs(expression: str, port_sources: PortSources) -> str:
     """Replace local port names referenced in an expression with the
-    upstream column that actually holds that value."""
+    upstream column that actually holds that value. Longest names are
+    substituted first so a shorter name (e.g. ORDER_ID) can't accidentally
+    match inside a longer one that merely starts with it (e.g. ORDER_ID1)."""
     for local_name in sorted(port_sources, key=len, reverse=True):
         _, column = port_sources[local_name]
         expression = re.sub(rf"\b{re.escape(local_name)}\b", column, expression)
     return expression
-
-
-def _single_upstream_alias(port_sources: PortSources) -> str:
-    return next(iter(port_sources.values()))[0]

@@ -1,3 +1,5 @@
+import pytest
+
 from pc2dbt.generators import (
     generate_aggregator,
     generate_joiner,
@@ -173,3 +175,37 @@ def test_generate_joiner_master_outer_join_keeps_detail_side():
     assert "from exp_stg_customers" in from_clause
     assert "left join agg_customer_orders" in sql
     assert "agg_customer_orders.CUSTOMER_ID = exp_stg_customers.CUSTOMER_ID" in sql
+
+
+def test_generate_projection_rejects_more_than_one_upstream_source():
+    exp = Transformation(
+        name="EXP_bad",
+        type="Expression",
+        ports=[Port(name="A", datatype="integer", porttype="INPUT/OUTPUT")],
+    )
+    port_sources = {
+        "A": ("one_upstream", "A"),
+        "B": ("another_upstream", "B"),
+    }
+    with pytest.raises(ValueError, match="single upstream"):
+        generate_projection(exp, port_sources)
+
+
+def test_generate_joiner_rejects_more_than_two_upstream_sources():
+    joiner = Transformation(
+        name="JNR_bad",
+        type="Joiner",
+        ports=[Port(name="A", datatype="integer", porttype="INPUT/OUTPUT")],
+        table_attributes={
+            "Join Condition": "A = A",
+            "Join Type": "Normal Join",
+            "Master Ports": "A",
+        },
+    )
+    port_sources = {
+        "A": ("first", "A"),
+        "B": ("second", "B"),
+        "C": ("third", "C"),
+    }
+    with pytest.raises(ValueError, match="exactly two upstream sources"):
+        generate_joiner(joiner, port_sources)
