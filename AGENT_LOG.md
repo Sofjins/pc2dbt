@@ -47,6 +47,63 @@ real invariant - every CTE appears after everything that feeds it - via
 the mapping's own connectors, instead of hard-coding one specific valid
 ordering.
 
+## 4. Reimplemented what the standard library already does
+
+First draft of `graph.py` hand-rolled a recursive depth-first-search
+topological sort, including its own `visited`/`in_progress` bookkeeping to
+detect cycles. Python's standard library has had exactly this - a
+topological sorter with built-in cycle detection - since 3.9 (`graphlib.
+TopologicalSorter`), and this project already required 3.11+. Caught in a
+dedicated multi-angle review pass (see below) that specifically checked
+the diff for reuse opportunities, not by anything failing. Replaced ~20
+lines of hand-rolled recursion with a 2-line call to the stdlib class.
+
+## 5. The same "alias.column, renamed if needed" logic written three times
+
+`generate_joiner`'s select-list, `generators._passthrough_expression`, and
+`emitter._build_final_select` each independently re-derived the same
+"qualify with an alias if there is one, append `as new_name` if the column
+was renamed" logic, with slightly different code each time. Also caught by
+the review pass, not a failure - all three call sites currently produced
+correct output, so nothing was actually broken, just harder to change
+consistently later (fix the rule in one place, forget the other two).
+Consolidated into one `column_reference()` helper used everywhere.
+
+## 6. Two places that silently trusted an assumption instead of checking it
+
+`single_upstream_alias` (used by Source Qualifier/Expression/Aggregator
+generation) just took the first upstream alias it found via
+`next(iter(port_sources.values()))`, without checking whether every port
+actually came from the *same* upstream - if a differently-shaped mapping
+ever fed one of these transformation types from two different upstream
+CTEs, this would have silently picked one of them and produced a `FROM`
+that quietly dropped/misattributed data, no error at all. Similarly,
+`generate_joiner`'s detail-alias lookup (`next(alias for alias in
+all_aliases if alias != master_alias)`) would raise a bare, confusing
+`StopIteration` - not a domain error - if there weren't exactly two
+upstream aliases. Both were flagged by a review pass looking specifically
+for "special case papering over a general mechanism instead of the
+mechanism enforcing its own assumption." Fixed by making both functions
+count the actual number of distinct upstream aliases and raise a clear
+`ValueError` naming what they found when it isn't what they expect,
+instead of assuming the fixture's shape always holds.
+
+## 7. Bare (alias, column) tuples whose meaning lived only in a comment
+
+`port_sources` values were plain 2-tuples - `port_sources[name][0]` was
+"the alias," `[1]` was "the column," but the only place that said so was a
+sentence in a module docstring, not anything visible at the call sites
+themselves (`alias, column = port_sources[name]` reads fine only if you
+already remember the order). Not caught by any test or automated review -
+caught by being asked directly "are you sure this is as simple and
+readable as it can be, for any Python developer, not just an LLM?" and
+rereading the file specifically hunting for exactly this kind of thing.
+Replaced with `UpstreamColumn(alias, column)`, a `NamedTuple`, so every
+read is self-describing (`.alias`, `.column`) while still unpacking like an
+ordinary tuple everywhere it already did. Same follow-up also caught one
+leftover ternary in `column_reference` that was inconsistent with this
+project's otherwise-consistent "no clever one-liners" style.
+
 ## End-to-end verification: passed clean on the first run
 
 Contrary to the build plan's expectation of "1-2 mismatches on first run"

@@ -155,12 +155,14 @@ Zero runtime dependencies — `xml.etree` and `dataclasses` only. `pytest` and
   names than their SQL equivalents) will be emitted verbatim and likely
   fail to run, since there's no real expression parser/translator, just
   textual port-name substitution.
-- **A transformation fed by more than two upstream instances**, or an
-  Expression/Aggregator fed by more than one upstream instance — the
-  "single upstream alias" assumption in `generate_projection` /
-  `generate_aggregator` would silently pick an arbitrary one of the
-  upstream aliases (via `next(iter(...))`) rather than erroring, which
-  could produce a plausible-looking but wrong `FROM` clause.
+- **A transformation fed by more than the supported number of upstream
+  instances** — Source Qualifier/Expression/Aggregator only support a
+  single upstream, and a Joiner only supports exactly two; both are
+  explicitly checked (`single_upstream_alias`, `generate_joiner`) and raise
+  a clear `ValueError` naming what was found if a mapping ever violated
+  that shape, rather than silently guessing. So this case fails loudly
+  instead of producing wrong output - but it does mean such a mapping
+  isn't convertible at all, only safely rejected.
 - **Multiple mappings or multiple targets in one XML file** — only the
   first of each is used; nothing warns that others were ignored.
 - **Reusable transformations** (`REUSABLE="YES"`, shared across mappings)
@@ -170,15 +172,32 @@ Zero runtime dependencies — `xml.etree` and `dataclasses` only. `pytest` and
 
 ## Where a coding agent got something wrong, and how it was caught
 
-See `AGENT_LOG.md` for the full detail. Short version: a clever
-string-concatenation shortcut in the Joiner generator that only worked
-because of an implementation detail in a helper function (caught on
-re-reading against this project's own "no clever one-liners" rule, not by
-a failing test); a test assertion that was itself wrong rather than the
-code it was testing (caught by reading the actual generated SQL in the
-failure output before "fixing" anything); and a test that baked in one
-arbitrary — but not the only — valid topological ordering of the CTEs
-(caught by checking the emitted order against the mapping's actual
-dependency edges instead of assuming the test's expectation was the spec).
-The end-to-end DuckDB comparison against the real jaffle_shop project passed
-row-for-row (100/100) on the first attempt.
+See `AGENT_LOG.md` for the full detail — seven entries, caught three
+different ways:
+
+- **By re-reading against this project's own stated rules, not a test
+  failure**: a clever string-concatenation shortcut in the Joiner generator
+  that only worked because of an implementation detail in a helper
+  function; later, one leftover ternary inconsistent with the project's
+  "no clever one-liners" style.
+- **By a dedicated multi-angle review pass** (reuse / simplification /
+  efficiency / altitude, run as four parallel review agents against the
+  full diff): a topological sort that reimplemented what Python's stdlib
+  `graphlib` already provides; the same "alias.column, renamed if needed"
+  logic written three separate times instead of once; and two places that
+  silently trusted an assumption (a single upstream source; exactly two
+  Joiner upstreams) instead of checking it and erroring clearly when it
+  didn't hold.
+- **By being asked directly** "is this really as simple and readable as
+  possible, for any Python developer, not just an LLM" and rereading with
+  that specific bar: bare `(alias, column)` tuples whose meaning only
+  lived in a docstring, not at any call site, replaced with a
+  self-describing `NamedTuple`.
+
+Also worth recording precisely because nothing went wrong: two of my own
+test assertions were themselves wrong rather than the code they were
+testing (a substring check that could never fail correctly; a test that
+baked in one arbitrary valid CTE ordering as if it were the only one) —
+caught both times by reading the actual output in the failure before
+"fixing" anything. And the end-to-end DuckDB comparison against the real
+jaffle_shop project passed row-for-row (100/100) on the very first attempt.
