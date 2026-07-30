@@ -6,13 +6,23 @@ becomes one CTE. The CTEs are ordered so each one only refers to CTEs
 already defined above it. The whole thing ends in one final `SELECT`
 shaped to match the mapping's target table.
 
-Built and tested against the sample mapping in `fixtures/m_customers.xml`.
-That mapping is similar to — but not the same as — the public dbt
-[jaffle_shop](https://github.com/dbt-labs/jaffle_shop_duckdb) demo
-project's `customers` model. The converter itself doesn't know anything
-about jaffle_shop specifically: it only understands generic PowerCenter
-concepts (sources, targets, transformations, ports, connectors), so it
-should work on any similarly-shaped mapping, not just this one.
+## A note on the sample file
+
+The assignment references an attached sample PowerCenter mapping XML, but
+no attachment was ever included — not in the assignment portal, not in any
+email. I asked about this directly, twice; the reply pointed to background
+reading on PowerCenter mappings and transformations rather than the file
+itself. Rather than stall on a blocked dependency, and in the spirit of
+"please do not over-invest," I authored `fixtures/m_customers.xml` myself:
+a mapping in the shape the assignment describes (source tables →
+transformations → a `customers` target), deliberately built to mirror the
+dbt jaffle_shop `customers` model that the assignment itself names as the
+reference target. The converter only understands generic PowerCenter
+concepts — nothing in `parser.py`, `generators.py`, or `emitter.py` is
+specific to this fixture (see `CLAUDE.md`'s hard rule against hardcoding
+fixture-specific names) — so it should handle the originally-intended file
+equally well if it turns out to be different from mine; happy to verify
+against it directly if it's provided.
 
 ## How to run it
 
@@ -23,47 +33,20 @@ pip install pytest duckdb # dev/test dependencies only
 
 python -m pc2dbt fixtures/m_customers.xml -o out
 cat out/customers.sql
-```
 
-Run the tests:
-
-```bash
 pytest -q
 ```
 
-### One test needs a second project checked out first
-
-Most of the tests just check that the generated SQL text looks right. One
-test, `tests/test_end_to_end.py`, goes further: it actually runs the
-generated SQL against real sample data and checks the result matches a
-known-correct answer.
-
-That known-correct answer comes from the public `jaffle_shop_duckdb`
-project, which already has its own hand-written `customers` model and its
-own sample data — the same sample data this project's fixture is based on.
-So before running the full test suite, clone that project as a sibling
-folder (next to this one, not inside it) and build it once:
-
-```bash
-cd ..
-git clone https://github.com/dbt-labs/jaffle_shop_duckdb
-cd jaffle_shop_duckdb
-python3 -m venv venv && source venv/bin/activate
-pip install dbt-duckdb
-DBT_PROFILES_DIR=. dbt seed && DBT_PROFILES_DIR=. dbt run
-```
-
-`dbt seed` loads jaffle_shop's sample CSVs into a local database file
-(`jaffle_shop.duckdb`). `dbt run` then builds their `customers` model into
-that same file. Our test reads that file afterward as the "correct"
-answer, separately loads the same sample CSVs fresh, runs our own
-generated SQL against them, and checks the two results match row for row.
-
-If that sibling project isn't there, `test_end_to_end.py` fails with a
-clear file-not-found error instead of quietly skipping. That's deliberate:
-a skipped test and a passing test can look the same at a glance, and this
-is the single most important check in the whole suite — it should never be
-possible to think it ran and passed when it never actually ran.
+That's the whole setup — no external project to clone, no `dbt` install.
+`tests/test_end_to_end.py` checks the generated SQL isn't just
+plausible-looking but actually *correct*: it runs it against real sample
+data and compares the result, row for row, against jaffle_shop's own
+`customers` model run against the same data. Rather than requiring a live
+clone of that project, `tests/fixtures/jaffle_shop_reference/` vendors the
+small slice of it this check actually needs — three sample CSVs and four
+small SQL files (about 450 lines total, Apache 2.0 licensed, see the
+`NOTICE.md` in that folder) — so the whole comparison runs in one
+in-memory DuckDB session with no network access and no extra install.
 
 ## How the mapping was read
 

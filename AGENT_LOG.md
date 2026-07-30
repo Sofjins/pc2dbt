@@ -104,6 +104,27 @@ ordinary tuple everywhere it already did. Same follow-up also caught one
 leftover ternary in `column_reference` that was inconsistent with this
 project's otherwise-consistent "no clever one-liners" style.
 
+## 8. Required a live external clone for one test, when it didn't need to
+
+The original end-to-end test asked whoever ran the suite to separately
+`git clone` jaffle_shop_duckdb, install `dbt-duckdb`, and run
+`dbt seed && dbt run` there first - a real setup tax for a single test,
+and a design choice I didn't reconsider on my own; it took being asked
+directly "doesn't it seem weird to clone the other project for one test?"
+to actually question it. On reflection the live clone bought nothing the
+comparison actually needed: jaffle_shop's reference answer only depends on
+~450 lines of its own seed CSVs and SQL model files (Apache 2.0 licensed),
+not on `dbt` itself - dbt's job is just rendering Jinja and running SQL,
+both of which the test can do directly against DuckDB with a couple of
+regex substitutions (the same trick already used for our own generated
+SQL's `{{ source(...) }}` calls). Vendored that small slice into
+`tests/fixtures/jaffle_shop_reference/` instead, and rewrote the test to
+build jaffle_shop's staging models and run its `customers.sql` itself, in
+the same in-memory DuckDB session as our own generated SQL. Net effect:
+`pytest -q` now runs the full suite, including this comparison, with zero
+external clones, zero extra installs, and no network access - and it still
+passed row-for-row (100/100) after the rewrite.
+
 ## End-to-end verification: passed clean on the first run
 
 Contrary to the build plan's expectation of "1-2 mismatches on first run"
