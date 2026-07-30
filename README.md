@@ -1,14 +1,18 @@
 # pc2dbt — Informatica PowerCenter → dbt converter
 
-Converts a PowerCenter mapping export (powrmart XML) into an equivalent dbt
-SQL model: one CTE per PowerCenter transformation, chained in dependency
-order, ending in a final `SELECT` shaped to the mapping's target table.
+Converts an Informatica PowerCenter mapping (exported as XML, the "powrmart"
+format) into an equivalent dbt SQL model. Each PowerCenter transformation
+becomes one CTE. The CTEs are ordered so each one only refers to CTEs
+already defined above it. The whole thing ends in one final `SELECT`
+shaped to match the mapping's target table.
 
-Built against the sample mapping in `fixtures/m_customers.xml`, which mirrors
-(but does not literally reproduce) the dbt [jaffle_shop](https://github.com/dbt-labs/jaffle_shop_duckdb)
-`customers` model. The converter itself never references jaffle_shop-specific
-names — it only knows about PowerCenter concepts (sources, targets,
-transformations, ports, connectors).
+Built and tested against the sample mapping in `fixtures/m_customers.xml`.
+That mapping is similar to — but not the same as — the public dbt
+[jaffle_shop](https://github.com/dbt-labs/jaffle_shop_duckdb) demo
+project's `customers` model. The converter itself doesn't know anything
+about jaffle_shop specifically: it only understands generic PowerCenter
+concepts (sources, targets, transformations, ports, connectors), so it
+should work on any similarly-shaped mapping, not just this one.
 
 ## How to run it
 
@@ -27,10 +31,18 @@ Run the tests:
 pytest -q
 ```
 
-`tests/test_end_to_end.py` additionally verifies the generated SQL against
-the real jaffle_shop_duckdb project. That test expects a sibling checkout at
-`../jaffle_shop_duckdb` with `dbt seed && dbt run` already executed there
-(so `jaffle_shop.duckdb` exists):
+### One test needs a second project checked out first
+
+Most of the tests just check that the generated SQL text looks right. One
+test, `tests/test_end_to_end.py`, goes further: it actually runs the
+generated SQL against real sample data and checks the result matches a
+known-correct answer.
+
+That known-correct answer comes from the public `jaffle_shop_duckdb`
+project, which already has its own hand-written `customers` model and its
+own sample data — the same sample data this project's fixture is based on.
+So before running the full test suite, clone that project as a sibling
+folder (next to this one, not inside it) and build it once:
 
 ```bash
 cd ..
@@ -41,163 +53,189 @@ pip install dbt-duckdb
 DBT_PROFILES_DIR=. dbt seed && DBT_PROFILES_DIR=. dbt run
 ```
 
-If that sibling repo isn't present, `test_end_to_end.py` will fail on a file-
-not-found error rather than silently skipping — that's intentional, so a
-missing reference project is never mistaken for a passing test.
+`dbt seed` loads jaffle_shop's sample CSVs into a local database file
+(`jaffle_shop.duckdb`). `dbt run` then builds their `customers` model into
+that same file. Our test reads that file afterward as the "correct"
+answer, separately loads the same sample CSVs fresh, runs our own
+generated SQL against them, and checks the two results match row for row.
+
+If that sibling project isn't there, `test_end_to_end.py` fails with a
+clear file-not-found error instead of quietly skipping. That's deliberate:
+a skipped test and a passing test can look the same at a glance, and this
+is the single most important check in the whole suite — it should never be
+possible to think it ran and passed when it never actually ran.
 
 ## How the mapping was read
 
-`fixtures/m_customers.xml` describes: three sources (`raw_customers`,
-`raw_orders`, `raw_payments`) → per-source passthrough/rename Expressions →
-a Joiner attaching `customer_id` to payments via orders → two Aggregators
-(order stats, payment totals, both grouped by `customer_id`) → two Joiners
-that fold those aggregates onto the full customer list, preserving
-customers with no orders/payments (`Master Outer Join`) → a final Expression
-renaming into the target's column names → the `customers` target.
+In plain terms, this mapping works out, for every customer: their first
+and most recent order date, how many orders they've placed, and how much
+they've paid in total — including customers who have no orders yet.
+
+More precisely, `fixtures/m_customers.xml` describes: three sources
+(`raw_customers`, `raw_orders`, `raw_payments`) → per-source
+passthrough/rename Expressions → a Joiner attaching `customer_id` to
+payments via orders → two Aggregators (order stats, payment totals, both
+grouped by `customer_id`) → two Joiners that fold those aggregates onto
+the full customer list, keeping customers with no orders/payments
+(`Master Outer Join`) → a final Expression renaming columns to match the
+target → the `customers` target.
 
 ## Architecture
 
-- `parser.py`: XML → IR (dataclasses in `ir.py`: `Mapping`, `Source`,
-  `Target`, `Transformation`, `Port`, `Instance`, `Connector`). Nothing else
-  touches the XML.
-- `graph.py`: topological sort over the instance graph (a depth-first
-  post-order over `CONNECTOR` edges), with cycle detection.
+- `parser.py`: turns the XML into plain Python objects (the dataclasses in
+  `ir.py`: `Mapping`, `Source`, `Target`, `Transformation`, `Port`,
+  `Instance`, `Connector`). This is the only file that ever touches XML —
+  everything downstream works from those plain objects instead.
+- `graph.py`: figures out a safe order to emit the CTEs in, using Python's
+  standard-library `graphlib.TopologicalSorter` over the mapping's
+  `CONNECTOR` edges (which instance feeds which). Raises a clear error if
+  the connectors ever formed a cycle, which would mean the mapping is
+  invalid.
 - `generators.py`: one function per PowerCenter transformation type
-  (`generate_source_import`, `generate_projection` for Source Qualifier and
-  Expression, `generate_aggregator`, `generate_joiner`), each a pure function
-  from a `Transformation` + a `port -> (upstream_alias, upstream_column)`
-  map to a SQL fragment.
-- `emitter.py`: walks the topological order, builds that port-source map
-  from the mapping's connectors, dispatches to the right generator, and
-  assembles the CTEs plus a final `SELECT` matched to the target's column
-  list and order.
-- `cli.py` / `__main__.py`: `python -m pc2dbt <xml> -o <dir>`.
+  (`generate_source_import`, `generate_projection` for Source Qualifier
+  and Expression, `generate_aggregator`, `generate_joiner`). Each is a
+  plain function: given one `Transformation` plus a map of "where does
+  each of its ports get its value from," it returns a SQL fragment. No
+  side effects, no XML, no file I/O.
+- `emitter.py`: walks the order from `graph.py`, builds that "where does
+  each port's value come from" map from the mapping's connectors, calls
+  the right generator for each transformation, and assembles the CTEs plus
+  a final `SELECT` matched to the target's column list and order.
+- `cli.py` / `__main__.py`: the command line entry point —
+  `python -m pc2dbt <xml> -o <dir>`.
 
-Zero runtime dependencies — `xml.etree` and `dataclasses` only. `pytest` and
-`duckdb` are dev/test-only.
+Zero runtime dependencies — just `xml.etree` and `dataclasses` from the
+standard library. `pytest` and `duckdb` are only needed for testing.
 
 ## Port and join rules implemented
 
-- `OUTPUT` port with an `EXPRESSION` → a computed select column, aliased to
-  the port name. Any local port names referenced in the expression text are
-  substituted with whatever upstream column actually feeds them (so a
-  renamed input, e.g. `AMOUNT_CENTS` fed from an upstream `AMOUNT` column,
-  resolves correctly inside `AMOUNT_CENTS / 100`).
-- `INPUT/OUTPUT` port → passthrough column (aliased only if the upstream
-  column name differs from the local port name).
-- Pure `INPUT` port → consumed by an expression or a join condition, never
-  projected on its own.
-- Aggregator: ports with `EXPRESSIONTYPE="GROUPBY"` become the `GROUP BY`
-  list (and are also selected); other `OUTPUT` ports carry the aggregate
-  expression.
-- Joiner: `"Join Type"="Normal Join"` → `INNER JOIN`.
-  `"Join Type"="Master Outer Join"` → detail side `LEFT JOIN` master side
-  (PowerCenter's Master Outer Join keeps every row from the detail table).
-  The `"Master Ports"` table attribute says which upstream is master; the
-  `"Join Condition"` attribute is translated into an aliased `ON` clause by
-  resolving each side's local port name back to its upstream column via the
-  connectors.
-- Unknown transformation types raise `ValueError` naming the type — the
-  converter never guesses at a transformation it doesn't implement.
+- An `OUTPUT` port with an `EXPRESSION` becomes a computed select column,
+  aliased to the port's name. Any local port names mentioned inside that
+  expression are swapped for whatever upstream column actually feeds them
+  — so if an input was renamed (e.g. a port called `AMOUNT_CENTS` is
+  actually fed by an upstream column called `AMOUNT`), the expression
+  `AMOUNT_CENTS / 100` still resolves to the right column.
+- An `INPUT/OUTPUT` port becomes a plain passthrough column (only aliased
+  if the upstream column's name is different from the port's own name).
+- A pure `INPUT` port is never selected on its own — it only exists to be
+  used inside an expression or a join condition.
+- Aggregator: ports marked `EXPRESSIONTYPE="GROUPBY"` become the
+  `GROUP BY` list (and are also selected as plain columns); other `OUTPUT`
+  ports carry the aggregate expression (e.g. `SUM(...)`, `COUNT(...)`).
+- Joiner: `"Join Type"="Normal Join"` becomes an `INNER JOIN`.
+  `"Join Type"="Master Outer Join"` becomes the detail side `LEFT JOIN`
+  the master side — this matches PowerCenter's own definition, where a
+  Master Outer Join keeps every row from the detail table. The
+  `"Master Ports"` attribute says which upstream is the master side; the
+  `"Join Condition"` attribute gets translated into a properly-aliased
+  `ON` clause by tracing each side's port name back to its real upstream
+  column.
+- Any transformation type this converter doesn't recognize raises a clear
+  `ValueError` naming the type. It never guesses at how to handle
+  something it doesn't actually implement.
 
 ## What was assumed, and what wasn't handled
 
-- **Single mapping, single target per XML file.** The parser takes the
-  first (only) `<MAPPING>` and the first (only) `<TARGET>` in the folder.
-  A repository with multiple mappings or a mapping with multiple targets
-  isn't handled.
-- **Transformation types implemented:** Source Qualifier, Expression,
-  Aggregator, Joiner (the four in the fixture). PowerCenter also has
-  Filter, Router, Lookup, Update Strategy, Sequence Generator, Sorter, and
-  others — none of these are implemented. The converter raises a clear
-  `ValueError` rather than silently skipping or guessing at one.
-- **Expression translation is textual substitution, not real parsing.**
-  `port.expression` (e.g. `"AMOUNT_CENTS / 100"`, `"MIN(ORDER_DATE)"`) is
-  treated as already-valid SQL, with local port names swapped for their
-  resolved upstream column via word-boundary regex substitution. This
-  works for the fixture's arithmetic and aggregate functions, but
-  PowerCenter's expression language has many built-in functions
-  (`IIF`, `DECODE`, `TO_CHAR`, date arithmetic, etc.) that are **not**
-  translated to their SQL/dbt equivalents — anything beyond bare
-  arithmetic or a handful of aggregate calls would pass through as
-  literal (and likely invalid) SQL text.
-- **Each Expression/Aggregator has exactly one upstream transformation.**
-  This holds for the fixture. A transformation fed by more than one
-  upstream instance is only handled for Joiners (which explicitly have
-  two).
-- **Source/target column casing is preserved as-is** (uppercase, matching
-  the XML) rather than lowercased to match dbt/jaffle_shop style. This is
-  a deliberate choice to avoid hardcoding a casing convention that isn't in
-  the XML; DuckDB (and most warehouses) treat unquoted identifiers
-  case-insensitively, so this doesn't affect correctness, only cosmetics.
-- **`source_group` for `{{ source(...) }}`** is taken from the XML's
-  `<FOLDER NAME="...">`, lowercased. There's no `sources.yml` generation —
-  the README's manual test setup resolves `source()` calls by stripping the
-  macro down to the bare table name and querying seed tables directly.
-- **No Filter transformation in the fixture**, so the generated model never
-  excludes rows by status — unlike the real jaffle_shop project's history
-  (which at points filtered out `'error'` payments). This isn't a converter
-  gap; it's a faithful conversion of a mapping that genuinely has no filter
-  step. If a Filter transformation appeared in a mapping, the converter
-  would currently raise `ValueError: Unsupported transformation type: 'Filter'`
-  rather than fabricate a `WHERE` clause.
-- **No generated tests/docs/schema.yml.** Only the SQL model is produced.
+- **One mapping, one target, per XML file.** The parser only looks at the
+  first `<MAPPING>` and the first `<TARGET>` it finds. A repository with
+  several mappings, or a mapping with more than one target, isn't
+  supported.
+- **Only four transformation types are implemented:** Source Qualifier,
+  Expression, Aggregator, Joiner — the ones actually used in the fixture.
+  PowerCenter also has Filter, Router, Lookup, Update Strategy, Sequence
+  Generator, Sorter, and others, none of which are implemented. Hitting
+  one of these raises a clear `ValueError` instead of silently skipping
+  it or guessing at what it should do.
+- **Expressions are handled by text substitution, not real parsing.** A
+  port's expression (e.g. `"AMOUNT_CENTS / 100"`, `"MIN(ORDER_DATE)"`) is
+  treated as if it were already valid SQL, with local port names swapped
+  for their real upstream column names. That works fine for the fixture's
+  plain arithmetic and aggregate functions. It does **not** work for
+  PowerCenter's many built-in functions that don't already look like SQL
+  (`IIF`, `DECODE`, `TO_CHAR`, date arithmetic, and so on) — those would be
+  copied through as-is and would likely fail to run.
+- **Each Expression or Aggregator only supports a single upstream
+  transformation.** That's true for every one in the fixture. Only the
+  Joiner is built to handle more than one upstream (exactly two, by
+  design).
+- **Column names keep the exact casing from the XML** (usually uppercase)
+  instead of being lowercased to match dbt/jaffle_shop style. This is
+  deliberate — lowercasing would mean assuming a naming convention that
+  isn't actually written anywhere in the XML. Most databases (including
+  DuckDB) treat unquoted column names case-insensitively, so this doesn't
+  change correctness, only how the SQL looks.
+- **The dbt `source()` group name** comes straight from the XML's
+  `<FOLDER NAME="...">`, lowercased. This project doesn't generate a
+  `sources.yml` file — the manual test setup above works around that by
+  stripping the `source()` call down to a plain table name before running
+  the SQL directly against DuckDB.
+- **The fixture has no Filter transformation**, so the generated model
+  never excludes rows by status. This is not a gap in the converter — it's
+  a faithful conversion of a mapping that genuinely has no filtering step.
+  If a real mapping did include a Filter, this converter would currently
+  raise `ValueError: Unsupported transformation type: 'Filter'` rather than
+  invent a `WHERE` clause on its own.
+- **No tests, docs, or `schema.yml` are generated** — only the SQL model
+  itself.
 
 ## Where the converter is most likely to produce wrong output
 
-- **Any transformation type outside {Source Qualifier, Expression,
-  Aggregator, Joiner}** — it will hard-fail rather than emit anything, which
-  is the intended behavior, but it means broader mappings (with Lookups,
-  Routers, Filters, ...) aren't convertible yet.
-- **Non-trivial PowerCenter expressions** — anything using PowerCenter
-  built-in functions that don't already look like valid SQL (`IIF`,
-  `DECODE`, PowerCenter date functions, string functions with different
-  names than their SQL equivalents) will be emitted verbatim and likely
-  fail to run, since there's no real expression parser/translator, just
-  textual port-name substitution.
-- **A transformation fed by more than the supported number of upstream
-  instances** — Source Qualifier/Expression/Aggregator only support a
-  single upstream, and a Joiner only supports exactly two; both are
-  explicitly checked (`single_upstream_alias`, `generate_joiner`) and raise
-  a clear `ValueError` naming what was found if a mapping ever violated
-  that shape, rather than silently guessing. So this case fails loudly
-  instead of producing wrong output - but it does mean such a mapping
-  isn't convertible at all, only safely rejected.
-- **Multiple mappings or multiple targets in one XML file** — only the
-  first of each is used; nothing warns that others were ignored.
-- **Reusable transformations** (`REUSABLE="YES"`, shared across mappings)
-  aren't specifically handled; the converter assumes a 1:1 mapping between
-  instance name and transformation definition, which held for this fixture
-  but isn't guaranteed by the format in general.
+- **Any transformation type other than Source Qualifier, Expression,
+  Aggregator, or Joiner** will stop the conversion entirely rather than
+  produce anything — which is the intended, safe behavior, but it does
+  mean bigger mappings (with Lookups, Routers, Filters, etc.) can't be
+  converted yet.
+- **PowerCenter expressions that don't already look like valid SQL** —
+  anything using PowerCenter-specific functions (`IIF`, `DECODE`, date
+  functions, string functions with different names than their SQL
+  equivalents) will be copied through unchanged and will likely fail to
+  run, since there's no real expression translator — just simple
+  find-and-replace on port names.
+- **A transformation fed by more upstream sources than it's designed
+  for** — Source Qualifier, Expression, and Aggregator only support a
+  single upstream; a Joiner only supports exactly two. Both limits are
+  actively checked, so a mapping that violates them raises a clear error
+  naming what was found, instead of producing quietly-wrong SQL. So this
+  fails safely — it just means such a mapping can't be converted at all.
+- **More than one mapping or target in a single XML file** — only the
+  first of each gets used, with no warning that anything else was
+  ignored.
+- **Reusable transformations** (`REUSABLE="YES"`, shared across several
+  mappings) aren't specifically handled. The converter assumes each
+  instance name matches its own transformation definition one-to-one,
+  which is true for this fixture but isn't guaranteed by the format in
+  general.
 
 ## Where a coding agent got something wrong, and how it was caught
 
-See `AGENT_LOG.md` for the full detail — seven entries, caught three
-different ways:
+Full detail in `AGENT_LOG.md` — seven entries, caught three different ways:
 
-- **By re-reading against this project's own stated rules, not a test
-  failure**: a clever string-concatenation shortcut in the Joiner generator
-  that only worked because of an implementation detail in a helper
-  function; later, one leftover ternary inconsistent with the project's
-  "no clever one-liners" style.
-- **By a dedicated multi-angle review pass** (reuse / simplification /
-  efficiency / altitude, run as four parallel review agents against the
-  full diff): a topological sort that reimplemented what Python's stdlib
-  `graphlib` already provides; the same "alias.column, renamed if needed"
-  logic written three separate times instead of once; and two places that
-  silently trusted an assumption (a single upstream source; exactly two
-  Joiner upstreams) instead of checking it and erroring clearly when it
-  didn't hold.
-- **By being asked directly** "is this really as simple and readable as
-  possible, for any Python developer, not just an LLM" and rereading with
-  that specific bar: bare `(alias, column)` tuples whose meaning only
-  lived in a docstring, not at any call site, replaced with a
-  self-describing `NamedTuple`.
+- **By rereading the code against this project's own stated rules, not a
+  failing test:** a clever string-concatenation shortcut in the Joiner
+  generator that only happened to work because of an implementation
+  detail in a helper function; later, one leftover ternary that didn't
+  match the project's own "no clever one-liners" style.
+- **By a dedicated review pass**, looking at the code from four different
+  angles (reuse, simplification, efficiency, "is this the right depth of
+  fix"): a topological sort that reimplemented something Python's
+  standard library already provides; the same small piece of logic
+  ("qualify a column, rename it if needed") written out three separate
+  times instead of once; and two places that quietly assumed something
+  ("there's only one upstream source here," "there are exactly two
+  upstream sources here") instead of checking it and failing clearly if
+  it wasn't true.
+- **By being asked directly**, "is this really as simple and readable as
+  it can be, for any Python developer — not just an LLM?", and rereading
+  with that specific question in mind: plain `(alias, column)` tuples
+  whose meaning only existed in a comment, not anywhere visible at the
+  places that actually used them. Replaced with a small named type so
+  every use of it is self-explanatory.
 
-Also worth recording precisely because nothing went wrong: two of my own
-test assertions were themselves wrong rather than the code they were
-testing (a substring check that could never fail correctly; a test that
-baked in one arbitrary valid CTE ordering as if it were the only one) —
-caught both times by reading the actual output in the failure before
-"fixing" anything. And the end-to-end DuckDB comparison against the real
-jaffle_shop project passed row-for-row (100/100) on the very first attempt.
+Also worth recording, because nothing was actually wrong: two of my own
+test assertions turned out to be the broken part, not the code they were
+testing — a substring check that could never have failed correctly, and a
+test that assumed one specific (but not the only) valid ordering of the
+generated CTEs. Both were caught by reading the real output in the test
+failure before touching any code. And the end-to-end comparison against
+the real jaffle_shop project matched, row for row (100 out of 100), on the
+very first attempt.
